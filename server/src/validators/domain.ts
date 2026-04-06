@@ -27,11 +27,69 @@ export const createStopSchema = z.object({
   lng: z.number().min(-180).max(180),
 });
 
-export const createUserSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8).max(128),
-  name: z.string().min(1).max(100),
-  role: z.enum(["admin", "driver", "student"]),
+const adminEmail = z
+  .string()
+  .trim()
+  .min(1, "Email is required")
+  .email("Enter a valid email address");
+
+const adminPassword = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .max(128, "Password must be at most 128 characters");
+
+export const createUserSchema = z
+  .object({
+    email: adminEmail,
+    password: adminPassword,
+    confirmPassword: z.string().min(1, "Confirm password"),
+    name: z
+      .string()
+      .trim()
+      .min(1, "Name is required")
+      .max(100, "Name must be at most 100 characters"),
+    role: z.enum(["admin", "driver", "student", "parent"]),
+  })
+  .refine((d) => d.password === d.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
+
+export const addParentSchema = z
+  .object({
+    email: adminEmail,
+    password: adminPassword,
+    confirmPassword: z.string().min(1, "Confirm password"),
+    name: z
+      .string()
+      .trim()
+      .min(1, "Parent name is required")
+      .max(100, "Name must be at most 100 characters"),
+  })
+  .refine((d) => d.password === d.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
+
+export const studentFeedbackSchema = z.object({
+  message: z
+    .string()
+    .trim()
+    .min(1, "Message is required")
+    .max(2000, "Message is too long"),
+});
+
+export const driverFaultSchema = z.object({
+  message: z
+    .string()
+    .trim()
+    .min(1, "Message is required")
+    .max(2000, "Message is too long"),
+});
+
+export const adminFeedbackPatchSchema = z.object({
+  adminResponse: z.string().trim().min(1, "Response is required").max(4000),
+  status: z.enum(["open", "resolved"]).optional(),
 });
 
 export const assignDriverSchema = z.object({
@@ -45,6 +103,27 @@ export const assignRouteSchema = z.object({
 export const assignStudentBusSchema = z.object({
   busId: z.string().nullable(),
 });
+
+/** Admin PATCH /users/:id — at least one field required (checked in controller). */
+export const adminUpdateUserSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1, "Name is required")
+      .max(100, "Name must be at most 100 characters")
+      .optional(),
+    email: adminEmail.optional(),
+    password: z
+      .string()
+      .min(8, "Password must be at least 8 characters")
+      .max(128, "Password must be at most 128 characters")
+      .optional(),
+    isActive: z.boolean().optional(),
+    /** Only for users with role `parent`; `null` clears the link. */
+    linkedStudentId: z.string().nullable().optional(),
+  })
+  .strict();
 
 /** `null` clears boarding stop (alerts apply to all stops). */
 export const setBoardingStopSchema = z.object({

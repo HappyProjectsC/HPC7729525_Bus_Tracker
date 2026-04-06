@@ -46,6 +46,18 @@ export async function notifyApproachingStop(
         assignedBus: busId,
         pushSubscription: { $exists: true, $ne: null },
       }).lean();
+      const studentIds = students.map((st) => st._id);
+      const parents =
+        studentIds.length > 0
+          ? await User.find({
+              role: "parent",
+              linkedStudent: { $in: studentIds },
+              pushSubscription: { $exists: true, $ne: null },
+            }).lean()
+          : [];
+      const boardingByStudent = new Map(
+        students.map((st) => [String(st._id), st.boardingStop ? String(st.boardingStop) : null])
+      );
       const payload = JSON.stringify({
         title: "Bus approaching",
         body: `Near stop: ${s.name}`,
@@ -67,7 +79,86 @@ export async function notifyApproachingStop(
           logger.warn("Web push failed", e);
         }
       }
+      for (const p of parents) {
+        const sid = String(p.linkedStudent);
+        const bs = boardingByStudent.get(sid);
+        if (bs && bs !== key) continue;
+        const sub = p.pushSubscription;
+        if (!sub?.endpoint) continue;
+        try {
+          await webpush.sendNotification(
+            {
+              endpoint: sub.endpoint,
+              keys: sub.keys,
+            },
+            payload
+          );
+        } catch (e) {
+          logger.warn("Web push failed", e);
+        }
+      }
       break;
     }
+  }
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
+export async function sendPushToUser(
+  userId: string,
+  title: string,
+  body: string,
+  tag: string
+): Promise<void> {
+  if (!configured) return;
+  const u = await User.findById(userId).select("pushSubscription").lean();
+  const sub = u?.pushSubscription;
+  if (!sub?.endpoint) return;
+  const payload = JSON.stringify({ title, body: truncate(body, 200), tag });
+  try {
+    await webpush.sendNotification(
+      {
+        endpoint: sub.endpoint,
+        keys: sub.keys,
+      },
+      payload
+    );
+  } catch (e) {
+    logger.warn("Web push failed", e);
+  }
+}
+
+/** Students on bus + parents linked to those students. */
+export async function notifyBusAudiencePush(
+  busId: string,
+  title: string,
+  body: string,
+  tagPrefix: string
+): Promise<void> {
+  if (!configured) return;
+  const students = await User.find({
+    role: "student",
+    assignedBus: busId,
+    pushSubscription: { $exists: true, $ne: null },
+  })
+    .select("_id")
+    .lean();
+  const studentIds = students.map((s) => s._id);
+  const parents = studentIds.length
+    ? await User.find({
+        role: "parent",
+        linkedStudent: { $in: studentIds },
+        pushSubscription: { $exists: true, $ne: null },
+      })
+        .select("_id")
+        .lean()
+    : [];
+  const ids = [...students.map((s) => String(s._id)), ...parents.map((p) => String(p._id))];
+  const tag = `${tagPrefix}-${busId}-${Date.now()}`;
+  for (const id of ids) {
+    await sendPushToUser(id, title, body, tag);
   }
 }

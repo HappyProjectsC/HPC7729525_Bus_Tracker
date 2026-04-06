@@ -8,7 +8,7 @@ import { env } from "../config/env.js";
 import { AppError } from "../middleware/errorHandler.js";
 import type { AuthRequest } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
-import { registerSchema, loginSchema } from "../validators/auth.js";
+import { registerSchema, loginSchema, changePasswordSchema } from "../validators/auth.js";
 import { parseDurationToMs } from "../utils/duration.js";
 
 function refreshExpiryMs(): number {
@@ -27,10 +27,11 @@ function setRefreshCookie(res: Response, token: string): void {
 }
 
 export const register = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const body = registerSchema.parse(req.body);
+  const parsed = registerSchema.parse(req.body);
+  const { confirmPassword: _c, ...body } = parsed;
   const existing = await User.findOne({ email: body.email.toLowerCase() });
   if (existing) {
-    throw new AppError(409, "Email already registered");
+    throw new AppError(409, "This email is already in use");
   }
   const passwordHash = await bcrypt.hash(body.password, 12);
   const user = await User.create({
@@ -143,6 +144,18 @@ export const logout = asyncHandler(async (req: AuthRequest, res: Response) => {
   res.json({ success: true });
 });
 
+export const changePassword = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw new AppError(401, "Unauthorized");
+  const body = changePasswordSchema.parse(req.body);
+  const user = await User.findById(req.user.sub).select("+passwordHash");
+  if (!user) throw new AppError(404, "User not found");
+  const ok = await bcrypt.compare(body.currentPassword, user.passwordHash);
+  if (!ok) throw new AppError(401, "Current password is incorrect");
+  user.passwordHash = await bcrypt.hash(body.newPassword, 12);
+  await user.save();
+  res.json({ success: true });
+});
+
 export const me = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) {
     throw new AppError(401, "Unauthorized");
@@ -151,14 +164,18 @@ export const me = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!user) {
     throw new AppError(404, "User not found");
   }
+  const base: Record<string, unknown> = {
+    id: user._id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    assignedBus: user.assignedBus,
+  };
+  if (user.role === "student" && user.linkedParent) {
+    base.linkedParent = user.linkedParent;
+  }
   res.json({
     success: true,
-    data: {
-      id: user._id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      assignedBus: user.assignedBus,
-    },
+    data: base,
   });
 });

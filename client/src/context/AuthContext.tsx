@@ -9,7 +9,7 @@ import {
 } from "react";
 import { api, setAccessToken } from "../api/client";
 
-export type Role = "admin" | "driver" | "student";
+export type Role = "admin" | "driver" | "student" | "parent";
 
 export interface User {
   id: string;
@@ -17,6 +17,7 @@ export interface User {
   name: string;
   role: Role;
   assignedBus?: string | null;
+  linkedParent?: string | null;
 }
 
 interface AuthContextValue {
@@ -24,7 +25,8 @@ interface AuthContextValue {
   loading: boolean;
   accessToken: string | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, confirmPassword: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string, confirmNewPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -86,16 +88,27 @@ export function AuthProvider({ children }: { children: ReactNode }): React.React
   );
 
   const register = useCallback(
-    async (name: string, email: string, password: string) => {
+    async (name: string, email: string, password: string, confirmPassword: string) => {
       const { data } = await api.post<{ data: { user: User; accessToken: string } }>(
         "/api/auth/register",
-        { name, email, password }
+        { name, email, password, confirmPassword }
       );
       applyToken(data.data.accessToken);
       sessionStorage.setItem("accessToken", data.data.accessToken);
       setUser(data.data.user);
     },
     [applyToken]
+  );
+
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string, confirmNewPassword: string) => {
+      await api.patch("/api/auth/change-password", {
+        currentPassword,
+        newPassword,
+        confirmNewPassword,
+      });
+    },
+    []
   );
 
   const logout = useCallback(async () => {
@@ -115,10 +128,11 @@ export function AuthProvider({ children }: { children: ReactNode }): React.React
       accessToken,
       login,
       register,
+      changePassword,
       logout,
       refreshUser,
     }),
-    [user, loading, accessToken, login, register, logout, refreshUser]
+    [user, loading, accessToken, login, register, changePassword, logout, refreshUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

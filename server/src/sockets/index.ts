@@ -21,6 +21,15 @@ const locationSchema = z.object({
   recordedAt: z.number().optional(),
 });
 
+let ioInstance: Server | null = null;
+
+export function getIo(): Server {
+  if (!ioInstance) {
+    throw new Error("Socket.IO not initialized");
+  }
+  return ioInstance;
+}
+
 export function attachSocket(httpServer: HttpServer): Server {
   const io = new Server(httpServer, {
     cors: {
@@ -28,6 +37,7 @@ export function attachSocket(httpServer: HttpServer): Server {
       credentials: true,
     },
   });
+  ioInstance = io;
 
   io.use(async (socket, next) => {
     try {
@@ -42,14 +52,19 @@ export function attachSocket(httpServer: HttpServer): Server {
         return;
       }
       const payload = verifyAccessToken(token);
-      const user = await User.findById(payload.sub).select("role isActive assignedBus");
+      const user = await User.findById(payload.sub).select("role isActive assignedBus linkedStudent");
       if (!user || !user.isActive) {
         next(new Error("Unauthorized"));
         return;
       }
       socket.data.userId = String(user._id);
       socket.data.role = user.role;
-      socket.data.assignedBus = user.assignedBus ? String(user.assignedBus) : null;
+      let effectiveBus = user.assignedBus ? String(user.assignedBus) : null;
+      if (user.role === "parent" && user.linkedStudent) {
+        const st = await User.findById(user.linkedStudent).select("assignedBus").lean();
+        effectiveBus = st?.assignedBus ? String(st.assignedBus) : null;
+      }
+      socket.data.assignedBus = effectiveBus;
       next();
     } catch (e) {
       logger.debug("Socket auth failed", e);
@@ -61,14 +76,17 @@ export function attachSocket(httpServer: HttpServer): Server {
     const userId = socket.data.userId as string;
     const role = socket.data.role as string;
 
+    socket.join(`user:${userId}`);
+
     socket.on("subscribe:bus", async (raw: unknown, cb?: (err?: string) => void) => {
       try {
-        const busId = typeof raw === "object" && raw && "busId" in raw ? String((raw as { busId: string }).busId) : "";
-        if (role !== "student" && role !== "admin") {
+        const busId =
+          typeof raw === "object" && raw && "busId" in raw ? String((raw as { busId: string }).busId) : "";
+        if (role !== "student" && role !== "admin" && role !== "parent") {
           cb?.("Forbidden");
           return;
         }
-        if (role === "student") {
+        if (role === "student" || role === "parent") {
           const assigned = socket.data.assignedBus as string | null;
           if (!assigned || assigned !== busId) {
             cb?.("Forbidden");

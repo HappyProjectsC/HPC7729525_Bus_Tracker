@@ -10,5 +10,6 @@ r.post("/login", authLimiter, auth.login);
 r.post("/refresh", authLimiter, auth.refresh);
 r.post("/logout", auth.logout);
 r.get("/me", requireAuth, auth.me);
+r.patch("/change-password", authLimiter, requireAuth, auth.changePassword);
 
 export default r;

@@ -8,5 +8,6 @@ r.use(requireAuth, requireRole("driver"));
 r.get("/me/bus", driver.myBus);
 r.post("/tracking/start", driver.startTracking);
 r.post("/tracking/stop", driver.stopTracking);
+r.post("/fault", driver.submitFault);
 
 export default r;

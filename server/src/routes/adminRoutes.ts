@@ -3,6 +3,7 @@ import * as bus from "../controllers/busController.js";
 import * as route from "../controllers/routeController.js";
 import * as stop from "../controllers/stopController.js";
 import * as user from "../controllers/userController.js";
+import * as feedbackAdmin from "../controllers/feedbackAdminController.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const r = Router();
@@ -29,7 +30,12 @@ r.delete("/stops/:id", stop.deleteStop);
 
 r.get("/users", user.listUsers);
 r.post("/users", user.createUser);
+r.patch("/users/:id", user.updateUser);
 r.patch("/users/:id/active", user.updateUserActive);
+r.delete("/users/:id", user.deleteUser);
 r.patch("/students/:id/assign-bus", user.assignStudentBus);
+
+r.get("/buses/:id/feedback", feedbackAdmin.listFeedbackForBus);
+r.patch("/feedback/:id", feedbackAdmin.patchFeedback);
 
 export default r;

@@ -4,6 +4,15 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply antialiased;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+}
+
 .leaflet-container {
   height: 100%;
   width: 100%;

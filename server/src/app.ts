@@ -12,6 +12,7 @@ import authRoutes from "./routes/authRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import driverRoutes from "./routes/driverRoutes.js";
 import studentRoutes from "./routes/studentRoutes.js";
+import parentRoutes from "./routes/parentRoutes.js";
 import locationRoutes from "./routes/locationRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 
@@ -41,6 +42,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/admin", apiLimiter, adminRoutes);
 app.use("/api/driver", apiLimiter, driverRoutes);
 app.use("/api/student", apiLimiter, studentRoutes);
+app.use("/api/parent", apiLimiter, parentRoutes);
 app.use("/api/location", locationRoutes);
 app.use("/api/notifications", apiLimiter, notificationRoutes);
 

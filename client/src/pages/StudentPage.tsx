@@ -6,40 +6,35 @@ import { useAuth } from "../context/AuthContext";
 import { useSocket } from "../hooks/useSocket";
 import { useInterpolatedPosition, type LatLng } from "../hooks/useInterpolatedPosition";
 import { toLeafletLatLngs } from "../lib/geo";
+import { fieldErrorsFromAxios, formErrorFromAxios } from "../lib/apiErrors";
+import { EtaList } from "../components/EtaList";
+import { SkeletonCard } from "../components/Skeleton";
+import type { BusStatus, MyBusPayload, Stop } from "../types/bus";
+import { PushNotifyButton } from "./student/PushNotifyButton";
 
-interface Stop {
-  _id: string;
-  name: string;
-  order: number;
-  location: { coordinates: [number, number] };
-}
-
-interface Eta {
-  stopId: string;
-  name: string;
-  order: number;
-  distanceMeters: number;
-  etaMinutes: number;
-}
-
-interface MyBusPayload {
-  bus: {
-    _id: string;
-    label: string;
-    lastLocation?: { coordinates?: [number, number] };
-    route?: unknown;
-  };
-  route: { name: string; polyline?: [number, number][]; avgSpeedKmh?: number } | null;
-  stops: Stop[];
-  etas: Eta[];
-  boardingStop: { _id: string; name: string; order: number } | null;
+function BusStatusChip({ status }: { status?: BusStatus }): React.ReactElement {
+  const s = status ?? "idle";
+  const cls =
+    s === "active"
+      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
+      : s === "maintenance"
+        ? "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+        : "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200";
+  return (
+    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium capitalize ${cls}`}>
+      {s}
+    </span>
+  );
 }
 
 export function StudentPage(): React.ReactElement {
-  const { accessToken } = useAuth();
+  const { accessToken, user, refreshUser } = useAuth();
   const [data, setData] = useState<MyBusPayload | null>(null);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [live, setLive] = useState<LatLng | null>(null);
+  const [faultMsg, setFaultMsg] = useState<string | null>(null);
+  const [showParentForm, setShowParentForm] = useState(false);
   const busId = data?.bus._id;
   const socket = useSocket(accessToken, !!busId);
 
@@ -49,7 +44,10 @@ export function StudentPage(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    load().catch(() => setErr("Could not load assignment"));
+    setLoading(true);
+    load()
+      .catch(() => setErr("Could not load assignment"))
+      .finally(() => setLoading(false));
   }, [load]);
 
   useEffect(() => {
@@ -78,9 +76,14 @@ export function StudentPage(): React.ReactElement {
         setLive({ lat: p.lat, lng: p.lng });
       }
     };
+    const onFault = (p: { busId: string; message: string }): void => {
+      if (p.busId === busId) setFaultMsg(p.message);
+    };
     socket.on("bus:location", onLoc);
+    socket.on("bus:fault", onFault);
     return () => {
       socket.off("bus:location", onLoc);
+      socket.off("bus:fault", onFault);
     };
   }, [socket, busId]);
 
@@ -102,26 +105,84 @@ export function StudentPage(): React.ReactElement {
   }, [data?.route?.polyline]);
 
   if (err && !data) {
-    return <p className="text-red-600">{err}</p>;
+    return <p className="text-red-600 dark:text-red-400">{err}</p>;
+  }
+
+  if (loading && !data) {
+    return <SkeletonCard />;
   }
 
   if (!data?.bus) {
     return (
-      <div className="bg-slate-100 rounded-xl p-6 text-slate-700">
+      <div className="bg-slate-100 dark:bg-slate-800/80 rounded-xl p-6 text-slate-700 dark:text-slate-200">
         <p className="font-medium">No bus assigned</p>
         <p className="text-sm mt-2">An administrator must assign a bus to your student account.</p>
       </div>
     );
   }
 
+  const hasParent = Boolean(user?.linkedParent);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <h1 className="text-2xl font-semibold text-slate-800">My bus: {data.bus.label}</h1>
-        {data.route && (
-          <span className="text-sm text-slate-600">Route: {data.route.name}</span>
-        )}
+        <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">My bus: {data.bus.label}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <BusStatusChip status={data.bus.status} />
+          {data.route && (
+            <span className="text-sm text-slate-600 dark:text-slate-400">Route: {data.route.name}</span>
+          )}
+        </div>
       </div>
+
+      {!hasParent && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            className="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium hover:bg-brand-700"
+            onClick={() => setShowParentForm(true)}
+          >
+            Add my parent
+          </button>
+        </div>
+      )}
+      {hasParent && (
+        <p className="text-sm text-emerald-700 dark:text-emerald-400">A parent account is linked to your profile.</p>
+      )}
+
+      {showParentForm && (
+        <AddParentModal
+          onClose={() => setShowParentForm(false)}
+          onSuccess={async () => {
+            setShowParentForm(false);
+            await refreshUser();
+          }}
+        />
+      )}
+
+      {faultMsg && (
+        <div
+          className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-amber-900 dark:text-amber-100 flex justify-between gap-3 items-start shadow-sm transition-all duration-200"
+          role="alert"
+        >
+          <span className="flex gap-2">
+            <span className="text-xl shrink-0" aria-hidden>
+              ⚠️
+            </span>
+            <span>
+              <strong>Driver update:</strong> {faultMsg}
+            </span>
+          </span>
+          <button
+            type="button"
+            className="shrink-0 text-sm font-medium rounded-lg px-2 py-1 hover:bg-amber-200/50 dark:hover:bg-amber-800/40"
+            onClick={() => setFaultMsg(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {data.stops.length > 0 && (
         <BoardingStopSelect
           stops={data.stops}
@@ -129,7 +190,7 @@ export function StudentPage(): React.ReactElement {
           onSaved={load}
         />
       )}
-      <div className="h-[420px] rounded-xl overflow-hidden border border-slate-200 shadow-sm">
+      <div className="h-[420px] rounded-xl overflow-hidden border border-slate-200 dark:border-slate-600 shadow-sm">
         <MapContainer center={center} zoom={14} scrollWheelZoom className="h-full w-full">
           <MapRecenter center={center} />
           <TileLayer
@@ -153,7 +214,9 @@ export function StudentPage(): React.ReactElement {
               >
                 <Popup>
                   {s.name} (stop {s.order + 1})
-                  {isBoarding && <span className="block text-green-700 font-medium">Your boarding stop</span>}
+                  {isBoarding && (
+                    <span className="block text-green-700 dark:text-green-400 font-medium">Your boarding stop</span>
+                  )}
                 </Popup>
               </CircleMarker>
             );
@@ -166,32 +229,169 @@ export function StudentPage(): React.ReactElement {
         </MapContainer>
       </div>
       <PushNotifyButton />
+      <StudentFeedbackForm />
       {data.etas.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 p-4">
-          <h2 className="font-medium text-slate-800 mb-3">ETA to stops</h2>
-          <ul className="divide-y divide-slate-100">
-            {data.etas.map((e) => {
-              const mine = data.boardingStop?._id === e.stopId;
-              return (
-                <li
-                  key={e.stopId}
-                  className={`py-2 flex justify-between text-sm ${mine ? "bg-emerald-50 -mx-4 px-4 rounded-lg" : ""}`}
-                >
-                  <span>
-                    {e.name}
-                    {mine && (
-                      <span className="ml-2 text-xs font-medium text-emerald-800">(your stop)</span>
-                    )}
-                  </span>
-                  <span className="text-slate-600">
-                    {e.etaMinutes} min · {e.distanceMeters} m
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+        <EtaList
+          etas={data.etas}
+          boardingStopId={data.boardingStop?._id ?? null}
+          yourStopLabel="(your stop)"
+        />
       )}
+    </div>
+  );
+}
+
+function AddParentModal({
+  onClose,
+  onSuccess,
+}: {
+  onClose: () => void;
+  onSuccess: () => Promise<void>;
+}): React.ReactElement {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [fieldErr, setFieldErr] = useState<Record<string, string>>({});
+  const [formErr, setFormErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function onSubmit(e: React.FormEvent): Promise<void> {
+    e.preventDefault();
+    setFieldErr({});
+    setFormErr(null);
+    setLoading(true);
+    try {
+      await api.post("/api/student/parent", { name, email, password, confirmPassword });
+      await onSuccess();
+    } catch (err) {
+      const fe = fieldErrorsFromAxios(err);
+      if (Object.keys(fe).length) setFieldErr(fe);
+      else setFormErr(formErrorFromAxios(err) ?? "Could not add parent.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-600 max-w-md w-full p-6 shadow-xl">
+        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-1">Add parent account</h2>
+        <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
+          Creates a parent login with the email and password you set. One parent per student.
+        </p>
+        <form onSubmit={(e) => void onSubmit(e)} className="space-y-3">
+          {formErr && <p className="text-sm text-red-600">{formErr}</p>}
+          <div>
+            <label className="block text-sm text-slate-700 dark:text-slate-300 mb-1">Parent name</label>
+            <input
+              required
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            {fieldErr.name && <p className="text-sm text-red-600 mt-1">{fieldErr.name}</p>}
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 dark:text-slate-300 mb-1">Parent email</label>
+            <input
+              required
+              type="email"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            {fieldErr.email && <p className="text-sm text-red-600 mt-1">{fieldErr.email}</p>}
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 dark:text-slate-300 mb-1">Password</label>
+            <input
+              required
+              type="password"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            {fieldErr.password && <p className="text-sm text-red-600 mt-1">{fieldErr.password}</p>}
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 dark:text-slate-300 mb-1">Confirm password</label>
+            <input
+              required
+              type="password"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+            {fieldErr.confirmPassword && (
+              <p className="text-sm text-red-600 mt-1">{fieldErr.confirmPassword}</p>
+            )}
+          </div>
+          <div className="flex gap-2 justify-end pt-2">
+            <button
+              type="button"
+              className="rounded-lg px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="rounded-lg bg-brand-600 text-white px-4 py-2 disabled:opacity-60"
+            >
+              {loading ? "Creating…" : "Create parent"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function StudentFeedbackForm(): React.ReactElement {
+  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent): Promise<void> {
+    e.preventDefault();
+    setErr(null);
+    setStatus(null);
+    try {
+      await api.post("/api/student/feedback", { message });
+      setMessage("");
+      setStatus("Thanks — your feedback was sent to administrators.");
+    } catch (error) {
+      const fe = fieldErrorsFromAxios(error);
+      setErr(fe.message ?? formErrorFromAxios(error) ?? "Could not send feedback.");
+    }
+  }
+
+  return (
+    <div className="bg-white dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-600 p-4">
+      <h2 className="font-medium text-slate-800 dark:text-slate-100 mb-2">Bus feedback</h2>
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+        Report issues about this bus (cleanliness, timing, etc.). Admins can reply in the app.
+      </p>
+      <form onSubmit={(e) => void submit(e)} className="space-y-2">
+        <textarea
+          required
+          rows={3}
+          placeholder="Describe the issue…"
+          className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        {status && <p className="text-sm text-green-700 dark:text-green-400">{status}</p>}
+        <button
+          type="submit"
+          className="rounded-lg bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 px-4 py-2 text-sm font-medium"
+        >
+          Send feedback
+        </button>
+      </form>
     </div>
   );
 }
@@ -206,12 +406,12 @@ function BoardingStopSelect({
   onSaved: () => Promise<void>;
 }): React.ReactElement {
   const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [localErr, setLocalErr] = useState<string | null>(null);
   const value = boardingStopId ?? "";
 
   async function onChange(e: React.ChangeEvent<HTMLSelectElement>): Promise<void> {
     const v = e.target.value;
-    setErr(null);
+    setLocalErr(null);
     setSaving(true);
     try {
       await api.patch("/api/student/boarding-stop", {
@@ -219,23 +419,23 @@ function BoardingStopSelect({
       });
       await onSaved();
     } catch {
-      setErr("Could not save boarding stop.");
+      setLocalErr("Could not save boarding stop.");
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <label htmlFor="boarding-stop" className="block text-sm font-medium text-slate-800 mb-1">
+    <div className="bg-white dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-600 p-4">
+      <label htmlFor="boarding-stop" className="block text-sm font-medium text-slate-800 dark:text-slate-100 mb-1">
         Where I board
       </label>
-      <p className="text-xs text-slate-500 mb-2">
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
         Push alerts only for this stop when set. Leave as “All stops” to get alerts at every stop.
       </p>
       <select
         id="boarding-stop"
-        className="w-full max-w-md rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+        className="w-full max-w-md rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
         value={value}
         disabled={saving}
         onChange={(e) => void onChange(e)}
@@ -247,61 +447,7 @@ function BoardingStopSelect({
           </option>
         ))}
       </select>
-      {err && <p className="text-sm text-red-600 mt-1">{err}</p>}
+      {localErr && <p className="text-sm text-red-600 mt-1">{localErr}</p>}
     </div>
   );
-}
-
-function PushNotifyButton(): React.ReactElement {
-  const [status, setStatus] = useState<string | null>(null);
-  async function enable(): Promise<void> {
-    setStatus(null);
-    try {
-      const { data: v } = await api.get<{ data: { publicKey: string | null } }>(
-        "/api/notifications/vapid-public-key"
-      );
-      const key = v.data.publicKey;
-      if (!key) {
-        setStatus("Push is not configured on the server.");
-        return;
-      }
-      const perm = await Notification.requestPermission();
-      if (perm !== "granted") {
-        setStatus("Notifications blocked.");
-        return;
-      }
-      await navigator.serviceWorker.register("/sw.js");
-      const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key),
-      });
-      await api.post("/api/notifications/subscribe", sub.toJSON());
-      setStatus("Notifications enabled.");
-    } catch {
-      setStatus("Could not enable notifications.");
-    }
-  }
-  if (!("Notification" in window)) return <></>;
-  return (
-    <div className="flex items-center gap-3">
-      <button
-        type="button"
-        className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
-        onClick={() => void enable()}
-      >
-        Enable stop alerts (push)
-      </button>
-      {status && <span className="text-sm text-slate-600">{status}</span>}
-    </div>
-  );
-}
-
-function urlBase64ToUint8Array(base64String: string): BufferSource {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(base64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
 }

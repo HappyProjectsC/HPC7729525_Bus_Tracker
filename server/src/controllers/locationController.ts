@@ -9,6 +9,7 @@ import {
   updateBusLocation,
 } from "../services/locationService.js";
 import { logger } from "../config/logger.js";
+import { getIo } from "../sockets/index.js";
 
 export const postLocation = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user || req.user.role !== "driver") throw new AppError(403, "Driver only");
@@ -31,5 +32,20 @@ export const postLocation = asyncHandler(async (req: AuthRequest, res: Response)
     body.heading,
     true
   );
+  const payload = {
+    busId: body.busId,
+    lat: body.lat,
+    lng: body.lng,
+    speedKmh: body.speedKmh,
+    heading: body.heading,
+    recordedAt: recordedAt.toISOString(),
+  };
+  try {
+    const io = getIo();
+    io.to(`bus:${body.busId}`).emit("bus:location", payload);
+    io.to("admin").emit("bus:location", payload);
+  } catch {
+    // Socket.IO not initialized (e.g. some tests)
+  }
   res.json({ success: true });
 });

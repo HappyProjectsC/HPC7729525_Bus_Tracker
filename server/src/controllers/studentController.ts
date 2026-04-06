@@ -5,53 +5,49 @@ import { User } from "../models/User.js";
 import { AppError } from "../middleware/errorHandler.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import type { AuthRequest } from "../middleware/auth.js";
-import { computeEtasWithPolyline } from "../services/etaService.js";
-import { env } from "../config/env.js";
-import { setBoardingStopSchema } from "../validators/domain.js";
+import { setBoardingStopSchema, addParentSchema, studentFeedbackSchema } from "../validators/domain.js";
+import { buildMyBusPayloadForStudent } from "../services/myBusPayloadService.js";
+import { BusFeedback } from "../models/BusFeedback.js";
+import bcrypt from "bcryptjs";
 
 export const myBus = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) throw new AppError(401, "Unauthorized");
-  const user = await User.findById(req.user.sub).lean();
-  if (!user?.assignedBus) {
+  const data = await buildMyBusPayloadForStudent(req.user.sub);
+  if (!data) {
     res.json({ success: true, data: null });
     return;
   }
-  const bus = await Bus.findById(user.assignedBus).populate("route").lean();
-  if (!bus) {
-    res.json({ success: true, data: null });
-    return;
+  res.json({ success: true, data: data });
+});
+
+export const addParent = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw new AppError(401, "Unauthorized");
+  const parsed = addParentSchema.parse(req.body);
+  const { confirmPassword: _c, ...body } = parsed;
+  const student = await User.findById(req.user.sub);
+  if (!student || student.role !== "student") throw new AppError(403, "Forbidden");
+  if (student.linkedParent) {
+    throw new AppError(400, "A parent is already linked to your account");
   }
-  const route = bus.route && typeof bus.route === "object" && "_id" in bus.route ? bus.route : null;
-  const routeId = route && "_id" in route ? route._id : null;
-  const stops = routeId
-    ? await Stop.find({ route: routeId }).sort({ order: 1 }).lean()
-    : [];
-  let boardingStop: { _id: string; name: string; order: number } | null = null;
-  if (user.boardingStop && routeId) {
-    const bs = await Stop.findOne({ _id: user.boardingStop, route: routeId }).lean();
-    if (bs) {
-      boardingStop = { _id: String(bs._id), name: bs.name, order: bs.order };
-    } else {
-      await User.updateOne({ _id: user._id }, { $unset: { boardingStop: 1 } });
-    }
+  const email = body.email.toLowerCase().trim();
+  const existing = await User.findOne({ email });
+  if (existing) {
+    throw new AppError(409, "This email is already in use");
   }
-  let etas: ReturnType<typeof computeEtasWithPolyline> = [];
-  const lat = bus.lastLocation?.coordinates?.[1];
-  const lng = bus.lastLocation?.coordinates?.[0];
-  if (lat != null && lng != null && stops.length && route && typeof route === "object" && "polyline" in route) {
-    const poly = (route as { polyline?: [number, number][] }).polyline ?? [];
-    const avg =
-      (route as { avgSpeedKmh?: number }).avgSpeedKmh ?? env.DEFAULT_AVG_SPEED_KMH;
-    etas = computeEtasWithPolyline(lat, lng, poly, stops, avg);
-  }
-  res.json({
+  const passwordHash = await bcrypt.hash(body.password, 12);
+  const parent = await User.create({
+    email,
+    passwordHash,
+    name: body.name.trim(),
+    role: "parent",
+    linkedStudent: student._id,
+  });
+  student.linkedParent = parent._id;
+  await student.save();
+  res.status(201).json({
     success: true,
     data: {
-      bus,
-      route,
-      stops,
-      etas,
-      boardingStop,
+      parent: { id: parent._id, email: parent.email, name: parent.name, role: parent.role },
     },
   });
 });
@@ -83,5 +79,23 @@ export const setBoardingStop = asyncHandler(async (req: AuthRequest, res: Respon
     data: {
       boardingStop: { _id: String(stop._id), name: stop.name, order: stop.order },
     },
+  });
+});
+
+export const submitFeedback = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) throw new AppError(401, "Unauthorized");
+  const body = studentFeedbackSchema.parse(req.body);
+  const user = await User.findById(req.user.sub);
+  if (!user || user.role !== "student") throw new AppError(403, "Forbidden");
+  if (!user.assignedBus) throw new AppError(400, "No bus assigned");
+  const fb = await BusFeedback.create({
+    bus: user.assignedBus,
+    student: user._id,
+    message: body.message.trim(),
+    status: "open",
+  });
+  res.status(201).json({
+    success: true,
+    data: { id: String(fb._id) },
   });
 });
