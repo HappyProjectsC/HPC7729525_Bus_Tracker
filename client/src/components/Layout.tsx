@@ -17,6 +17,8 @@ export function Layout({ children }: { children: React.ReactNode }): React.React
 
   const navLinkClass =
     "text-slate-600 dark:text-slate-300 hover:text-brand-600 dark:hover:text-brand-400 py-2 md:py-0 border-b border-slate-100 dark:border-slate-700 md:border-0";
+  const mobileNavLinkClass =
+    "rounded-lg px-3 py-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors";
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100">
@@ -109,46 +111,46 @@ export function Layout({ children }: { children: React.ReactNode }): React.React
         </div>
         {mobileOpen && (
           <div className="md:hidden border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 pb-4">
-            <nav className="flex flex-col text-sm pt-2">
+            <nav className="flex flex-col text-sm pt-3 gap-1">
               {user?.role === "student" && (
-                <Link className={navLinkClass} to="/student">
+                <Link className={mobileNavLinkClass} to="/student">
                   My bus
                 </Link>
               )}
               {user?.role === "parent" && (
-                <Link className={navLinkClass} to="/parent">
+                <Link className={mobileNavLinkClass} to="/parent">
                   My child&apos;s bus
                 </Link>
               )}
               {user?.role === "driver" && (
-                <Link className={navLinkClass} to="/driver">
+                <Link className={mobileNavLinkClass} to="/driver">
                   Driver
                 </Link>
               )}
               {user?.role === "admin" && (
-                <Link className={navLinkClass} to="/admin">
+                <Link className={mobileNavLinkClass} to="/admin">
                   Admin
                 </Link>
               )}
               <button
                 type="button"
-                className="text-left rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-2 mt-1 text-slate-700 dark:text-slate-200"
+                className="text-left rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-2 mt-1 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 transition-colors"
                 onClick={toggle}
               >
                 {theme === "dark" ? "Light mode" : "Dark mode"}
               </button>
               {user && (
                 <>
-                  <Link className={navLinkClass} to="/profile">
+                  <Link className={mobileNavLinkClass} to="/profile">
                     Profile
                   </Link>
-                  <div className="flex items-center gap-2 py-2">
+                  <div className="flex items-center gap-2 py-2 px-1 border-y border-slate-200 dark:border-slate-700 mt-1">
                     <NotificationBell />
                     <span className="text-slate-500 dark:text-slate-400 truncate">{user.name}</span>
                   </div>
                   <button
                     type="button"
-                    className="rounded-lg bg-slate-100 dark:bg-slate-700 px-3 py-2 text-left text-slate-700 dark:text-slate-200"
+                    className="rounded-lg bg-slate-100 dark:bg-slate-700 px-3 py-2 mt-1 text-left text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
                     onClick={async () => {
                       await logout();
                       nav("/login");
@@ -160,11 +162,11 @@ export function Layout({ children }: { children: React.ReactNode }): React.React
               )}
               {!user && (
                 <>
-                  <Link className={`${navLinkClass} text-brand-600 dark:text-brand-400`} to="/login">
+                  <Link className={`${mobileNavLinkClass} text-brand-600 dark:text-brand-400`} to="/login">
                     Log in
                   </Link>
                   <Link
-                    className="mt-2 rounded-lg bg-brand-600 px-3 py-2 text-center text-white hover:bg-brand-700"
+                    className="mt-2 rounded-lg bg-brand-600 px-3 py-2 text-center text-white hover:bg-brand-700 transition-colors"
                     to="/register"
                   >
                     Register

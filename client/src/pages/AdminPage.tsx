@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip } from "react-leaflet";
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { useConfirm } from "../context/ConfirmContext";
+import { useTheme } from "../context/ThemeContext";
 import { useToast } from "../context/ToastContext";
 import { useSocket } from "../hooks/useSocket";
 import { MapFitBounds } from "../components/MapFitBounds";
@@ -34,8 +36,57 @@ interface FaultFeedItem {
   createdAt: string;
 }
 
-function BusStatusBadge({ status }: { status?: BusStatus }): React.ReactElement {
+interface StopRow {
+  _id: string;
+  route: string;
+  name: string;
+  order: number;
+}
+
+interface RouteDetail {
+  _id: string;
+  name: string;
+  avgSpeedKmh?: number;
+  polyline: [number, number][];
+  stops: StopRow[];
+}
+
+interface DashboardFeedbackItem {
+  id: string;
+  busLabel: string;
+  studentName: string;
+  message: string;
+  createdAt: string;
+}
+
+interface AdminNotifItem {
+  _id: string;
+  title: string;
+  body: string;
+  readAt: string | null;
+  createdAt: string;
+}
+
+function statusPillLabel(status?: BusStatus): "active" | "inactive" {
+  return status === "active" ? "active" : "inactive";
+}
+
+function BusStatusBadge({
+  status,
+  outlined,
+}: {
+  status?: BusStatus;
+  outlined?: boolean;
+}): React.ReactElement {
   const s = status ?? "idle";
+  if (outlined) {
+    const v = statusPillLabel(s);
+    return (
+      <span className={`admin-status-pill ${v === "active" ? "is-active" : "is-inactive"}`}>
+        {v}
+      </span>
+    );
+  }
   const cls =
     s === "active"
       ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
@@ -60,27 +111,41 @@ interface UserRow {
 }
 
 export function AdminPage(): React.ReactElement {
-  const { accessToken } = useAuth();
+  const location = useLocation();
+  const { accessToken, user } = useAuth();
+  const { theme, toggle } = useTheme();
+  const { confirm } = useConfirm();
   const { toast } = useToast();
   const [tab, setTab] = useState<Tab>("fleet");
+  const [filter, setFilter] = useState<"all" | "active" | "inactive">("all");
+  const [query, setQuery] = useState("");
   const [buses, setBuses] = useState<BusRow[]>([]);
   const [routes, setRoutes] = useState<{ _id: string; name: string }[]>([]);
+  const [routesById, setRoutesById] = useState<Record<string, RouteDetail>>({});
   const [admins, setAdmins] = useState<UserRow[]>([]);
   const [drivers, setDrivers] = useState<UserRow[]>([]);
   const [students, setStudents] = useState<UserRow[]>([]);
   const [parents, setParents] = useState<UserRow[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
   const [faultFeed, setFaultFeed] = useState<FaultFeedItem[]>([]);
+  const [hiddenAlerts, setHiddenAlerts] = useState<string[]>([]);
+  const [liveBusId, setLiveBusId] = useState<string | null>(null);
+  const [editBus, setEditBus] = useState<BusRow | null>(null);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifItems, setNotifItems] = useState<AdminNotifItem[]>([]);
+  const [notificationsUnread, setNotificationsUnread] = useState(0);
+  const [feedbackPreview, setFeedbackPreview] = useState<DashboardFeedbackItem[]>([]);
+  const isManagementPage = location.pathname === "/admin/manage";
 
   const refreshBuses = useCallback(async () => {
     const { data } = await api.get<{ data: { items: BusRow[] } }>("/api/admin/buses?limit=100");
     setBuses(data.data.items);
   }, []);
 
-  const adminSocket = useSocket(accessToken, tab === "fleet" || tab === "faults");
+  const adminSocket = useSocket(accessToken, true);
 
   useEffect(() => {
-    if (!adminSocket || (tab !== "fleet" && tab !== "faults")) return;
+    if (!adminSocket) return;
     adminSocket.emit("subscribe:admin", {}, () => {});
     const onLoc = (payload: {
       busId: string;
@@ -132,7 +197,7 @@ export function AdminPage(): React.ReactElement {
       adminSocket.off("bus:location", onLoc);
       adminSocket.off("bus:fault", onFault);
     };
-  }, [adminSocket, tab, refreshBuses]);
+  }, [adminSocket, refreshBuses]);
 
   const refreshRoutes = useCallback(async () => {
     const { data } = await api.get<{ data: { items: { _id: string; name: string }[] } }>(
@@ -154,15 +219,88 @@ export function AdminPage(): React.ReactElement {
     setParents(p.data.data.items);
   }, []);
 
-  useEffect(() => {
-    void Promise.all([refreshBuses(), refreshRoutes(), refreshUsers()]).finally(() => setPageLoading(false));
-  }, [refreshBuses, refreshRoutes, refreshUsers]);
+  const refreshNotifications = useCallback(async () => {
+    const { data } = await api.get<{ data: { items: AdminNotifItem[]; unread: number } }>(
+      "/api/notifications/in-app?limit=5"
+    );
+    setNotifItems(data.data.items);
+    setNotificationsUnread(data.data.unread);
+  }, []);
+
+  const refreshFeedbackPreview = useCallback(async (rows: BusRow[]) => {
+    const chunks = await Promise.all(
+      rows.slice(0, 6).map(async (bus) => {
+        try {
+          const { data } = await api.get<{ data: { items: FeedbackItem[] } }>(
+            `/api/admin/buses/${bus._id}/feedback`
+          );
+          return data.data.items.slice(0, 1).map((item) => ({
+            id: item._id,
+            busLabel: bus.label,
+            studentName: item.student?.name ?? "Student",
+            message: item.message,
+            createdAt: item.createdAt,
+          }));
+        } catch {
+          return [];
+        }
+      })
+    );
+    const all = chunks.flat().sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(0, 2);
+    setFeedbackPreview(all);
+  }, []);
 
   useEffect(() => {
-    if (tab !== "fleet") return;
+    void Promise.all([refreshBuses(), refreshRoutes(), refreshUsers(), refreshNotifications()]).finally(() =>
+      setPageLoading(false)
+    );
+  }, [refreshBuses, refreshRoutes, refreshUsers, refreshNotifications]);
+
+  useEffect(() => {
+    if (buses.length === 0) return;
+    void refreshFeedbackPreview(buses);
+  }, [buses, refreshFeedbackPreview]);
+
+  useEffect(() => {
     const id = setInterval(() => void refreshBuses(), 10000);
     return () => clearInterval(id);
-  }, [tab, refreshBuses]);
+  }, [refreshBuses]);
+
+  useEffect(() => {
+    if (routes.length === 0) return;
+    void Promise.all(
+      routes.map(async (r) => {
+        if (routesById[r._id]) return null;
+        try {
+          const { data } = await api.get<{ data: RouteDetail }>(`/api/admin/routes/${r._id}`);
+          return data.data;
+        } catch {
+          return null;
+        }
+      })
+    ).then((list) => {
+      const next = list.filter(Boolean) as RouteDetail[];
+      if (next.length === 0) return;
+      setRoutesById((prev) => {
+        const merged = { ...prev };
+        next.forEach((route) => {
+          merged[route._id] = route;
+        });
+        return merged;
+      });
+    });
+  }, [routes, routesById]);
+
+  useEffect(() => {
+    if (!adminSocket) return;
+    const onNotif = (): void => {
+      void refreshNotifications();
+    };
+    adminSocket.on("notification:new", onNotif);
+    return () => {
+      adminSocket.off("notification:new", onNotif);
+    };
+  }, [adminSocket, refreshNotifications]);
 
   const busesWithLocation = useMemo(
     () => buses.filter((b) => b.lastLocation?.coordinates),
@@ -182,10 +320,308 @@ export function AdminPage(): React.ReactElement {
     [busesWithLocation]
   );
 
+  const alertCards = useMemo(
+    () =>
+      faultFeed.slice(0, 3).map((f, idx) => {
+        const tone = idx === 0 ? "amber" : idx === 1 ? "red" : "purple";
+        const title = idx === 0 ? "Engine Maintenance Required" : idx === 1 ? "Road Alert" : "Traffic Delay";
+        return { ...f, tone, title, delay: idx * 100 };
+      }),
+    [faultFeed]
+  );
+
+  const visibleAlerts = useMemo(
+    () => alertCards.filter((item) => !hiddenAlerts.includes(item.id)),
+    [alertCards, hiddenAlerts]
+  );
+
+  const filteredBuses = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return buses.filter((b) => {
+      const status = statusPillLabel(b.status);
+      if (filter !== "all" && status !== filter) return false;
+      if (!q) return true;
+      const values = [b.label, b.route?.name, b.assignedDriver?.name, b.plate].filter(Boolean).join(" ").toLowerCase();
+      return values.includes(q);
+    });
+  }, [buses, filter, query]);
+
+  const totalBuses = buses.length;
+  const activeBuses = buses.filter((b) => b.status === "active").length;
+  const activeAlerts = visibleAlerts.length;
+  const liveBus = liveBusId ? buses.find((b) => b._id === liveBusId) ?? null : null;
+  const adminInitials = (user?.name ?? "AD")
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  async function removeBus(bus: BusRow): Promise<void> {
+    const ok = await confirm({
+      title: "Remove bus",
+      message: `Remove ${bus.label}? This action cannot be undone.`,
+      confirmLabel: "Remove",
+      variant: "danger",
+    });
+    if (!ok) return;
+    await api.delete(`/api/admin/buses/${bus._id}`);
+    await refreshBuses();
+    toast.success("Bus removed.");
+  }
+
+  async function toggleBusActive(bus: BusRow): Promise<void> {
+    const nextStatus: BusStatus = bus.status === "active" ? "idle" : "active";
+    await api.patch(`/api/admin/buses/${bus._id}`, { status: nextStatus });
+    await refreshBuses();
+    toast.success(nextStatus === "active" ? "Bus activated." : "Bus deactivated.");
+  }
+
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">Admin</h1>
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 dark:border-slate-700 pb-2">
+    <div className="admin-dashboard space-y-6">
+      {!isManagementPage && (
+        <>
+      <section className="admin-card">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="h-11 w-11 rounded-full bg-[#3B6FE8] text-white flex items-center justify-center text-xl">🚌</div>
+            <div>
+              <p className="text-lg font-semibold text-[#3B6FE8]">CampusRide</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Welcome back, Admin 👋</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" className="admin-icon-btn" onClick={toggle}>
+              {theme === "dark" ? "☀️" : "🌙"}
+            </button>
+            <button
+              type="button"
+              className="admin-icon-btn relative"
+              aria-label="Toggle notifications panel"
+              onClick={() => setNotifOpen((o) => !o)}
+            >
+              🔔
+              {notificationsUnread > 0 && <span className="admin-badge-count">{notificationsUnread}</span>}
+            </button>
+            <div className="admin-avatar">{adminInitials}</div>
+          </div>
+        </div>
+        <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+          Manage all buses and monitor live tracking
+        </p>
+        {notifOpen && (
+          <div className="mt-3 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="px-3 py-2 text-sm font-medium border-b border-slate-200 dark:border-slate-700">
+              Notifications
+            </div>
+            {notifItems.length === 0 ? (
+              <p className="px-3 py-3 text-sm text-slate-500 dark:text-slate-400">No notifications yet.</p>
+            ) : (
+              <ul className="divide-y divide-slate-200 dark:divide-slate-700">
+                {notifItems.map((n) => (
+                  <li key={n._id} className="px-3 py-2">
+                    <p className="text-sm font-medium">{n.title}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{n.body}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        {visibleAlerts.map((a) => (
+          <article
+            key={a.id}
+            className={`admin-alert admin-alert-${a.tone}`}
+            style={{ animationDelay: `${a.delay}ms` }}
+          >
+            <div className="flex items-start gap-3">
+              <span className="text-base">{a.tone === "amber" ? "🔧" : a.tone === "red" ? "⚠️" : "🕐"}</span>
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold text-sm">{a.title}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{a.message}</p>
+              </div>
+              <span className="admin-bus-chip">{a.busLabel}</span>
+              <button
+                type="button"
+                className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-200"
+                onClick={() => setHiddenAlerts((prev) => [...prev, a.id])}
+              >
+                ✕
+              </button>
+            </div>
+          </article>
+        ))}
+      </section>
+
+      <section className="admin-stats-grid">
+        {[
+          { label: "TOTAL BUSES", value: totalBuses, icon: "🚌", cls: "bg-blue-100 text-blue-700" },
+          { label: "ACTIVE NOW", value: activeBuses, icon: "✅", cls: "bg-green-100 text-green-700" },
+          { label: "ACTIVE ALERTS", value: activeAlerts, icon: "⚠️", cls: "bg-red-100 text-red-700" },
+          { label: "NEW FEEDBACK", value: feedbackPreview.length, icon: "💬", cls: "bg-purple-100 text-purple-700" },
+        ].map((metric, idx) => (
+          <article key={metric.label} className="admin-card admin-metric" style={{ animationDelay: `${idx * 50}ms` }}>
+            <div>
+              <p className="text-[12px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{metric.label}</p>
+              <p className="text-[28px] font-bold leading-tight">{metric.value}</p>
+            </div>
+            <div className={`h-11 w-11 rounded-full flex items-center justify-center ${metric.cls}`}>{metric.icon}</div>
+          </article>
+        ))}
+      </section>
+
+      <section className="admin-card space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold">All Buses</h2>
+          <button type="button" className="admin-outline-btn" onClick={() => setTab("fleet")}>
+            Live Map
+          </button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+          <label className="admin-input-wrap">
+            <span>🔍</span>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="admin-input"
+              placeholder="Search bus, route, driver"
+            />
+          </label>
+          <select value={filter} onChange={(e) => setFilter(e.target.value as "all" | "active" | "inactive")} className="admin-select">
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </div>
+        <div className="admin-bus-list">
+          {filteredBuses.map((b, idx) => {
+            const routeDetail = b.route?._id ? routesById[b.route._id] : undefined;
+            const nextStop = routeDetail?.stops?.[0]?.name ?? "Unavailable";
+            const speed = b.speedKmh != null && !Number.isNaN(b.speedKmh) ? `${b.speedKmh.toFixed(0)} km/h` : "— km/h";
+            const eta = b.speedKmh ? `${Math.max(2, Math.round(15 - b.speedKmh / 4))} min` : "—";
+            const isActive = b.status === "active";
+            const hasCoords = !!b.lastLocation?.coordinates;
+            return (
+              <article key={b._id} className="admin-bus-card" style={{ animationDelay: `${idx * 80}ms` }}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="admin-bus-avatar">{b.label.slice(0, 2).toUpperCase()}</div>
+                    <div className="min-w-0">
+                      <p className="font-semibold truncate">{b.label}</p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 truncate">{b.route?.name ?? "No route assigned"}</p>
+                    </div>
+                  </div>
+                  <BusStatusBadge status={b.status} outlined />
+                </div>
+                <div className="admin-grid">
+                  <p>👤 {b.assignedDriver?.name ?? "Unassigned"}</p>
+                  <p>📞 {b.assignedDriver?.email ?? "No contact"}</p>
+                  <p>📍 {b.route?.name ?? "Route unavailable"}</p>
+                  <button
+                    type="button"
+                    className="admin-outline-btn justify-self-start"
+                    disabled={!isActive || !hasCoords}
+                    onClick={() => setLiveBusId(b._id)}
+                  >
+                    Live View 🗺️
+                  </button>
+                  <p>🕐 ETA: {eta}</p>
+                  <p>💨 Speed: {speed}</p>
+                  <p className="sm:col-span-2">🛑 Next Stop: {nextStop}</p>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                  <button type="button" className="admin-icon-btn" title="Edit bus details" onClick={() => setEditBus(b)}>✏️</button>
+                  <button
+                    type="button"
+                    className="admin-icon-btn"
+                    title="View full route"
+                    onClick={() => b.route?._id && setTab("routes")}
+                  >
+                    📋
+                  </button>
+                  <a className="admin-icon-btn" title="Contact driver" href={b.assignedDriver?.email ? `mailto:${b.assignedDriver.email}` : "#"}>📲</a>
+                  <button type="button" className="admin-icon-btn" title="Toggle active" onClick={() => void toggleBusActive(b)}>
+                    {isActive ? "🔴" : "🟢"}
+                  </button>
+                  <button type="button" className="admin-icon-btn" title="Remove bus" onClick={() => void removeBus(b)}>🗑️</button>
+                </div>
+              </article>
+            );
+          })}
+          {filteredBuses.length === 0 && (
+            <article className="admin-card">
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                No buses match the current search/filter.
+              </p>
+            </article>
+          )}
+        </div>
+      </section>
+
+      <section className="admin-extra-grid">
+        <article className="admin-card">
+          <h3 className="font-semibold mb-3">Feedback Panel</h3>
+          {feedbackPreview.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-slate-400">No recent feedback available.</p>
+          ) : (
+            <div className="space-y-3">
+              {feedbackPreview.map((fb) => (
+                <div key={fb.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
+                  <p className="text-sm font-medium">{fb.studentName} · {fb.busLabel}</p>
+                  <p className="text-sm text-slate-600 dark:text-slate-300 truncate">{fb.message}</p>
+                  <div className="mt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <span>{new Date(fb.createdAt).toLocaleString()}</span>
+                    <button type="button" className="text-[#3B6FE8] hover:underline" onClick={() => setTab("buses")}>Reply</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+        <article className="admin-card flex flex-col sm:flex-row sm:items-center justify-between items-start gap-3">
+          <div>
+            <p className="font-semibold">Driver Management</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{drivers.length} drivers registered</p>
+          </div>
+          <button type="button" className="text-[#3B6FE8] font-medium self-start sm:self-auto" onClick={() => setTab("users")}>Manage Drivers →</button>
+        </article>
+        <article className="admin-card flex flex-col sm:flex-row sm:items-center justify-between items-start gap-3">
+          <div>
+            <p className="font-semibold">Route Management</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{routes.length} routes configured</p>
+          </div>
+          <button type="button" className="text-[#3B6FE8] font-medium self-start sm:self-auto" onClick={() => setTab("routes")}>Manage Routes →</button>
+        </article>
+      </section>
+        </>
+      )}
+
+      {!isManagementPage && (
+        <section className="admin-card flex flex-col sm:flex-row sm:items-center justify-between items-start gap-3">
+          <div>
+            <h3 className="font-semibold">Management Tools</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Open buses, routes, stops, users, and live map controls on a dedicated page.
+            </p>
+          </div>
+          <Link to="/admin/manage" className="admin-outline-btn whitespace-nowrap self-start sm:self-auto">
+            Open Tools →
+          </Link>
+        </section>
+      )}
+
+      {isManagementPage && (
+      <div className="admin-card">
+        <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between items-start gap-2">
+          <h2 className="text-lg font-semibold">Management Tools</h2>
+          <Link to="/admin" className="admin-outline-btn whitespace-nowrap self-start sm:self-auto">
+            ← Back to Dashboard
+          </Link>
+        </div>
+        <div className="flex flex-wrap gap-2 border-b border-slate-200 dark:border-slate-700 pb-2">
         {(
           [
             ["fleet", "Live map"],
@@ -333,6 +769,91 @@ export function AdminPage(): React.ReactElement {
           }}
         />
       )}
+      </div>
+      )}
+
+      {liveBus && (
+        <LiveBusSheet bus={liveBus} onClose={() => setLiveBusId(null)} />
+      )}
+      {editBus && (
+        <EditBusModal
+          bus={editBus}
+          onClose={() => setEditBus(null)}
+          onSaved={async () => {
+            setEditBus(null);
+            await refreshBuses();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function LiveBusSheet({ bus, onClose }: { bus: BusRow; onClose: () => void }): React.ReactElement {
+  const c = bus.lastLocation?.coordinates;
+  const center: [number, number] = c ? [c[1], c[0]] : [12.9716, 77.5946];
+  return (
+    <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center sm:justify-center p-3" onClick={onClose}>
+      <div className="admin-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-semibold">Live View</h3>
+          <button type="button" onClick={onClose}>✕</button>
+        </div>
+        <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">{bus.label}</p>
+        <div className="h-52 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
+          <MapContainer center={center} zoom={14} className="h-full w-full">
+            <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            {c && <Marker position={center}><Popup>{bus.label}</Popup></Marker>}
+          </MapContainer>
+        </div>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {c ? `Lat: ${center[0].toFixed(5)}, Lng: ${center[1].toFixed(5)}` : "Live location unavailable"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EditBusModal({
+  bus,
+  onClose,
+  onSaved,
+}: {
+  bus: BusRow;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}): React.ReactElement {
+  const { toast } = useToast();
+  const [label, setLabel] = useState(bus.label);
+  const [plate, setPlate] = useState(bus.plate ?? "");
+  const [status, setStatus] = useState<BusStatus>(bus.status ?? "idle");
+
+  async function submit(e: React.FormEvent): Promise<void> {
+    e.preventDefault();
+    await api.patch(`/api/admin/buses/${bus._id}`, { label, plate, status });
+    toast.success("Bus updated.");
+    await onSaved();
+  }
+
+  return (
+    <div className="fixed inset-0 z-[90] bg-black/50 p-4 flex items-center justify-center" onClick={onClose}>
+      <form className="admin-card w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()} onSubmit={(e) => void submit(e)}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold">Edit bus details</h3>
+          <button type="button" onClick={onClose}>✕</button>
+        </div>
+        <input className="admin-input w-full" value={label} onChange={(e) => setLabel(e.target.value)} required />
+        <input className="admin-input w-full" value={plate} onChange={(e) => setPlate(e.target.value)} placeholder="Plate" />
+        <select className="admin-select w-full" value={status} onChange={(e) => setStatus(e.target.value as BusStatus)}>
+          <option value="active">active</option>
+          <option value="idle">inactive</option>
+          <option value="maintenance">inactive</option>
+        </select>
+        <div className="flex gap-2 justify-end">
+          <button type="button" className="admin-outline-btn" onClick={onClose}>Cancel</button>
+          <button type="submit" className="admin-outline-btn border-[#3B6FE8] text-[#3B6FE8]">Save</button>
+        </div>
+      </form>
     </div>
   );
 }

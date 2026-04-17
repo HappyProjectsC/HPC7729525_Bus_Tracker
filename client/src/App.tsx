@@ -83,6 +83,14 @@ function AppRoutes(): React.ReactElement {
           }
         />
         <Route
+          path="/admin/manage"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <AdminPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/profile"
           element={
             <AuthedOnly>
